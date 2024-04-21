@@ -15,8 +15,10 @@ from langsmith.schemas import Example, Run
 ### Parameter
 # Max tries
 max_iterations = 3
+max_unit_iterations = 5
 # Reflect
 # flag = 'reflect'
+unit_flag = True
 flag = 'do not reflect'
 llm = AzureChatOpenAI(
             azure_deployment="gpt-4-128k",
@@ -35,35 +37,69 @@ code_gen_prompt = ChatPromptTemplate.from_messages(
     ("placeholder", "{messages}")]
 )
 
-# LCEL docs
-url = "https://python.langchain.com/docs/expression_language/"
-loader = RecursiveUrlLoader(
-    url=url, max_depth=20, extractor=lambda x: Soup(x, "html.parser").text
-)
-docs = loader.load()
+# # LCEL docs
+# url = "https://python.langchain.com/docs/expression_language/"
+# loader = RecursiveUrlLoader(
+#     url=url, max_depth=20, extractor=lambda x: Soup(x, "html.parser").text
+# )
+# docs = loader.load()
 
-# Sort the list based on the URLs and get the text
-d_sorted = sorted(docs, key=lambda x: x.metadata["source"])
-d_reversed = list(reversed(d_sorted))
-concatenated_content = "\n\n\n --- \n\n\n".join(
-    [doc.page_content for doc in d_reversed]
-)
+# # Sort the list based on the URLs and get the text
+# d_sorted = sorted(docs, key=lambda x: x.metadata["source"])
+# d_reversed = list(reversed(d_sorted))
+# concatenated_content = "\n\n\n --- \n\n\n".join(
+#     [doc.page_content for doc in d_reversed]
+# )
 
 client = langsmith.Client()
-
 
 # Data model
 class code(BaseModel):
     """Code output"""
-
+    name: str = Field(description="Name of the code block")
     prefix: str = Field(description="Description of the problem and approach")
     imports: str = Field(description="Code block import statements")
     code: str = Field(description="Code block not including import statements")
     description = "Schema for code solutions to questions about LCEL."
 
-
+class CodeBlock:
+    def __init__(self) -> None:
+        self.prefix = ""
+        self.imports = ""
+        self.code = ""
+        self.unit_test_code = ""
+        
+class CodeBlocks:
+    def __init__(self) -> None:
+        self.blocks = [CodeBlock()]
+        self.user_inputs = []
+        
+    def set_latest_block(self, attribute, value):
+        setattr(self.blocks[-1], attribute, value)
+    
+    def finish_block(self):
+        self.blocks.append(CodeBlock())
+    
+    def return_excutable_block(self, idx, unit_test=True):
+        block = self.blocks[idx]
+        if unit_test:
+            return "\n".join([ block.imports + "\n" + block.code + "\n" + block.unit_test_code])
+        else:
+            return "\n".join([ block.imports + "\n" + block.code])
+        # return "\n".join([ block.imports + "\n" + block.code + "\n" + block.unit_test_code])
+    
+    def get_latest_user_input(self):
+        return self.user_inputs[len(self.blocks) - 1]
+    
+    def save_all_files(self, dir_name="tempcode"):
+        os.makedirs(dir_name, exist_ok=True)
+        for i, block in enumerate(self.blocks[:-1]):
+            with open(f"{dir_name}/{block.name}.py", "w") as file:
+                file.write(self.return_excutable_block(i))
+    
 
 code_gen_chain = code_gen_prompt | llm.with_structured_output(code)
+code_gen_result = CodeBlocks()
 
 class GraphState(TypedDict):
     """
@@ -80,7 +116,6 @@ class GraphState(TypedDict):
     messages : List
     generation : str
     iterations : int
-    
 
  
 ### Nodes
@@ -108,12 +143,46 @@ def generate(state: GraphState):
         messages += [("user","Now, try again. Invoke the code tool to structure the output with a prefix, imports, and code block:")]
         
     # Solution
-    code_solution = code_gen_chain.invoke({"context": concatenated_content, "messages" : messages})
+    code_solution = code_gen_chain.invoke({"context":"","messages" : messages})
     messages += [("assistant",f"{code_solution.prefix} \n Imports: {code_solution.imports} \n Code: {code_solution.code}")]
     
+    code_gen_result.set_latest_block("prefix", code_solution.prefix)
+    code_gen_result.set_latest_block("imports", code_solution.imports)
+    code_gen_result.set_latest_block("code", code_solution.code)
+    code_gen_result.set_latest_block("name", code_solution.name)
     # Increment
     iterations = iterations + 1
     return {"generation": code_solution, "messages": messages, "iterations": iterations}
+
+def generate_unit_tests(state: GraphState):
+    """
+    Generate unit tests
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        state (dict): New key added to state, generation
+    """
+
+    print("---GENERATING UNIT TESTS---")
+    
+    # State
+    messages = state["messages"]
+    iterations = state["iterations"]
+
+    # get user input
+    # user_input = input("Please provide the input for the unit test in format (arg1, arg2, ...), give \n if no input:")
+    user_input = code_gen_result.get_latest_user_input()
+    if user_input != "\n":
+        messages += [("user",f"input arguments for the unit test: {user_input}")]
+    # Generate unit tests
+    messages += [("user",f"Now, Please generate the test code for the the solution to see if the function can run: {code_gen_result.return_excutable_block(-1, True)}, you can generate the input by passing randomly built matrix. This code will be directly excecuted so not make it a function")]
+    unit_test = code_gen_chain.invoke({"context":"","messages" : messages})
+    messages +=  [("assistant",f"{unit_test.prefix} \n Imports: {unit_test.imports} \n Code: {unit_test.code}")]
+    code_gen_result.set_latest_block("unit_test_code", unit_test.imports +"\n" + unit_test.code )
+    iterations = iterations + 1
+    return {"generation": unit_test, "messages": messages, "iterations": iterations, "error": "no"}
 
 def code_check(state: GraphState):
     """
@@ -137,12 +206,17 @@ def code_check(state: GraphState):
     prefix = code_solution.prefix
     imports = code_solution.imports
     code = code_solution.code
-
+    # write the code to a file
+    with open("temp.py", "w") as file:
+        file.write(imports)
+        file.write("\n")
+        file.write(code)
     # Check imports
     try:
         exec(imports)
     except Exception as e:
         print("---CODE IMPORT CHECK: FAILED---")
+        print(f"{e}")
         error_message = [("user", f"Your solution failed the import test: {e}")]
         messages += error_message
         return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "yes"}
@@ -152,6 +226,7 @@ def code_check(state: GraphState):
         exec(imports + "\n" + code)
     except Exception as e:
         print("---CODE BLOCK CHECK: FAILED---")
+        print(f"solution failed the code execution test: {e}")
         error_message = [("user", f"Your solution failed the code execution test: {e}")]
         messages += error_message
         return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "yes"}
@@ -160,15 +235,32 @@ def code_check(state: GraphState):
     print("---NO CODE TEST FAILURES---")
     return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "no"}
 
+
+def unit_test_check(state: GraphState):
+    print("---UNIT TEST CHECK---")
+    
+    messages = state["messages"]
+    unit_test_code = state["generation"]
+    iterations = state["iterations"]
+
+    try:
+        exec(code_gen_result.return_excutable_block(-1))
+    except Exception as e:
+        print("---UNIT TEST FAILED---")
+        print(f"unit test failed: {e}")
+        error_message = [("user", f"Your solution failed the unit test: {e}")]
+        messages += error_message
+        return {"generation": unit_test_code, "messages": messages, "iterations": iterations, "error": "yes"}
+    
+    print("---UNIT TEST PASSED---")
+    return {"generation": unit_test_code, "messages": messages, "iterations": iterations, "error": "no"}
+    
+
 def reflect(state: GraphState):
     """
     Reflect on errors
 
-    Args:
-        state (dict): The current graph state
 
-    Returns:
-        state (dict): New key added to state, generation
     """
 
     print("---GENERATING CODE SOLUTION---")
@@ -184,13 +276,41 @@ def reflect(state: GraphState):
                                     documentation to avoid making this mistake again.""")]
     
     # Add reflection
-    reflections = code_gen_chain.invoke({"context"  : concatenated_content, "messages" : messages})
+    reflections = code_gen_chain.invoke({"context":"", "messages" : messages})
     messages += [("assistant" , f"Here are reflections on the error: {reflections}")]
     return {"generation": code_solution, "messages": messages, "iterations": iterations}
 
 ### Edges
 
-def decide_to_finish(state: GraphState):
+def decide_to_finish_generate(state: GraphState):
+    """
+    Determines whether to finish.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        str: Next node to call
+    """
+    error = state["error"]
+    iterations = state["iterations"]
+    
+    if error == "no" or iterations == max_iterations:
+        state["iterations"] = 0
+        print("---DECISION: FINISH GENERATION---")
+        if unit_flag:
+            return "unit_test"
+        else:
+            return "end"
+    else:
+        print("---DECISION: RE-TRY SOLUTION---")
+        if flag == "reflect":
+            return "reflect"
+        else:
+            return "generate"
+
+
+def decide_to_finish_unit_test(state: GraphState):
     """
     Determines whether to finish.
 
@@ -203,40 +323,16 @@ def decide_to_finish(state: GraphState):
     error = state["error"]
     iterations = state["iterations"]
 
-    if error == "no" or iterations == max_iterations:
+    if error == "no" or iterations == max_unit_iterations:
         print("---DECISION: FINISH---")
+        code_gen_result.finish_block()
         return "end"
     else:
         print("---DECISION: RE-TRY SOLUTION---")
         if flag == 'reflect':
             return "reflect"
         else:
-            return "generate"
-
-
-workflow = StateGraph(GraphState)
-
-# Define the nodes
-workflow.add_node("generate", generate)  # generation solution
-workflow.add_node("check_code", code_check)  # check code
-workflow.add_node("reflect", reflect)  # reflect
-
-# Build graph
-workflow.set_entry_point("generate")
-workflow.add_edge("generate", "check_code")
-workflow.add_conditional_edges(
-    "check_code",
-    decide_to_finish,
-    {
-        "end": END,
-        "reflect": "reflect",
-        "generate": "generate",
-    },
-)
-workflow.add_edge("reflect", "generate")
-app = workflow.compile()
-question = "How can I directly pass a string to a runnable and use it to construct the input needed for my prompt?"
-app.invoke({"messages":[("user",question)],"iterations":0})
+            return "unit_test"
 
 def check_import(run: Run, example: Example) -> dict: 
     imports = run.outputs.get("imports")
@@ -255,25 +351,57 @@ def check_execution(run: Run, example: Example) -> dict:
     except:
         return {"key": "code_execution_check" , "score": 0} 
 
-def predict_langgraph(example: dict):
+def predict_langgraph(app, example: dict):
     """ LangGraph """
-    graph = app.invoke({"messages":[("user",example["question"])],"iterations":0})
+    graph = app.invoke({"context":"","messages":[("user",example["question"])],"iterations":0})
     solution = graph["generation"]
     return {"imports": solution.imports, "code": solution.code}
 
+workflow = StateGraph(GraphState)
 
+# Define the nodes
+workflow.add_node("generate", generate)  # generation solution
+workflow.add_node("check_code", code_check)  # check code
+workflow.add_node("unit_test", generate_unit_tests)  # unit test
+# workflow.add_node("reflect", reflect)  # reflect
+workflow.add_node("unit_test_check", unit_test_check)  # unit test check
+
+# Build graph
+workflow.set_entry_point("generate")
+workflow.add_edge("generate", "check_code")
+workflow.add_edge("unit_test", "unit_test_check")
+workflow.add_conditional_edges(
+    "check_code",
+    decide_to_finish_generate,
+    {
+        "end": END,
+        "unit_test": "unit_test",
+        "generate": "generate",
+    },
+)
+
+workflow.add_conditional_edges(
+    "unit_test_check",
+    decide_to_finish_unit_test,
+    {
+        "end": END,
+        "unit_test": "unit_test",
+        # "generate": "generate",
+    },
+)
+app = workflow.compile()
 # Evaluator
 code_evalulator = [check_import,check_execution]
-
-user_input = {
-    "question": "Please write python code to read a medical image and do denoising on it. Use cv2 if needed. The entire code will provide a function interface in the end. The input is image_path, output is a numpy array(H, W, 3) representing the denoised image"
-}
-
-result = predict_langgraph(user_input)
+input_json_path = "./dataloader.json"
+import json
+with open(input_json_path, "r") as file:
+    inputs = json.load(file)
+for i in range(len(inputs)):
+    if "user_inputs" in inputs[i]:
+        code_gen_result.user_inputs.append(inputs[i]["user_inputs"])
+    else:
+        code_gen_result.user_inputs.append("")
+result = predict_langgraph(app, {"question": inputs[0]["question"]})
 print(result)
+code_gen_result.save_all_files("tempcode")
 
-# write the code to a file
-with open("temp.py", "w") as file:
-    file.write(result["imports"])
-    file.write("\n")
-    file.write(result["code"])
