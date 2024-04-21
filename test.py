@@ -1,5 +1,4 @@
-from bs4 import BeautifulSoup as Soup
-from langchain_community.document_loaders.recursive_url_loader import RecursiveUrlLoader
+
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env', override=True)
@@ -10,12 +9,13 @@ from langchain_core.pydantic_v1 import BaseModel, Field
 from langgraph.graph import END, StateGraph
 from langchain_core.pydantic_v1 import BaseModel, Field
 import langsmith
+import subprocess
 from langsmith.schemas import Example, Run
-
+import tempfile
 ### Parameter
 # Max tries
 max_iterations = 3
-max_unit_iterations = 5
+max_unit_iterations = 4
 # Reflect
 # flag = 'reflect'
 unit_flag = True
@@ -177,7 +177,7 @@ def generate_unit_tests(state: GraphState):
     if user_input != "\n":
         messages += [("user",f"input arguments for the unit test: {user_input}")]
     # Generate unit tests
-    messages += [("user",f"Now, Please generate the test code for the the solution to see if the function can run: {code_gen_result.return_excutable_block(-1, True)}, you can generate the input by passing randomly built matrix. This code will be directly excecuted so not make it a function")]
+    messages += [("user",f"Now, Please generate the test code for the the solution to see if the function can run: {code_gen_result.return_excutable_block(-1, True)}, you can generate the input by passing randomly built matrix. This code will be directly excecuted so not make it a function. For the import, only import new requirements if it is not imported previously")]
     unit_test = code_gen_chain.invoke({"context":"","messages" : messages})
     messages +=  [("assistant",f"{unit_test.prefix} \n Imports: {unit_test.imports} \n Code: {unit_test.code}")]
     code_gen_result.set_latest_block("unit_test_code", unit_test.imports +"\n" + unit_test.code )
@@ -242,9 +242,14 @@ def unit_test_check(state: GraphState):
     messages = state["messages"]
     unit_test_code = state["generation"]
     iterations = state["iterations"]
-
+    code = code_gen_result.return_excutable_block(-1)
     try:
-        exec(code_gen_result.return_excutable_block(-1))
+        # write code to a temperal file with tempfile and run the py file
+        with tempfile.NamedTemporaryFile(mode='w', suffix=".py") as file:
+            file.write(code)
+            file.seek(0)
+            output = subprocess.check_output(['python', file.name])
+            print(output)
     except Exception as e:
         print("---UNIT TEST FAILED---")
         print(f"unit test failed: {e}")
@@ -392,7 +397,7 @@ workflow.add_conditional_edges(
 app = workflow.compile()
 # Evaluator
 code_evalulator = [check_import,check_execution]
-input_json_path = "./dataloader.json"
+input_json_path = "/u/jiahuad2/codebase/hack/workflow-agent/dataloader.json"
 import json
 with open(input_json_path, "r") as file:
     inputs = json.load(file)
