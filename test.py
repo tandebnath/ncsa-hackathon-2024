@@ -243,17 +243,16 @@ def unit_test_check(state: GraphState):
     unit_test_code = state["generation"]
     iterations = state["iterations"]
     code = code_gen_result.return_excutable_block(-1)
-    try:
-        # write code to a temperal file with tempfile and run the py file
-        with tempfile.NamedTemporaryFile(mode='w', suffix=".py") as file:
-            file.write(code)
-            file.seek(0)
-            output = subprocess.check_output(['python', file.name])
-            print(output)
-    except Exception as e:
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix=".py") as file:
+        file.write(code)
+        file.seek(0)
+        output = subprocess.run(['python', file.name], capture_output=True, text=True)
+        
+    if output.stderr:
         print("---UNIT TEST FAILED---")
-        print(f"unit test failed: {e}")
-        error_message = [("user", f"Your solution failed the unit test: {e}")]
+        print(f"unit test failed: {output.stderr}")
+        error_message = [("user", f"Your solution failed the unit test: {output.stderr}")]
         messages += error_message
         return {"generation": unit_test_code, "messages": messages, "iterations": iterations, "error": "yes"}
     
