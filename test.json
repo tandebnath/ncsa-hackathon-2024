@@ -1,0 +1,6 @@
+[
+    {
+        "question": "Write a function code for pytorch classification dataloder. The function input is a path to all signal (3xN) npy files and a path to the annotation csv files. For the signal, you need to split it to 3 signals with N shape, then convert each to spectrolgram and stack at last channel, resuting in (H, W, 3) channels. Then, You should do some augmentation to it. The function returns a dataloader with 8 workers. For the csv file, it records the id for each npy data, and the npy is in format {id}.npy. The dataloader should resize the image to 224, normalize the image and convert it to tensor",
+        "user_input": "npy dictionary path: '0_filtered'\n csv path: '0_filtered_labels.csv'"
+    }
+]

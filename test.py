@@ -1,21 +1,23 @@
-from bs4 import BeautifulSoup as Soup
+#from bs4 import BeautifulSoup as Soup
 from langchain_community.document_loaders.recursive_url_loader import RecursiveUrlLoader
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env', override=True)
 import os 
+import langsmith
 from typing import Dict, TypedDict, List
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langgraph.graph import END, StateGraph
 from langchain_core.pydantic_v1 import BaseModel, Field
-import langsmith
 from langsmith.schemas import Example, Run
+import subprocess
 
 ### Parameter
 # Max tries
 max_iterations = 3
 max_unit_iterations = 5
+
 # Reflect
 # flag = 'reflect'
 unit_flag = True
@@ -177,7 +179,7 @@ def generate_unit_tests(state: GraphState):
     if user_input != "\n":
         messages += [("user",f"input arguments for the unit test: {user_input}")]
     # Generate unit tests
-    messages += [("user",f"Now, Please generate the test code for the the solution to see if the function can run: {code_gen_result.return_excutable_block(-1, True)}, you can generate the input by passing randomly built matrix. This code will be directly excecuted so not make it a function")]
+    messages += [("user",f"Now, Please generate the a simple unit test code for the the solution to see if the function can run: {code_gen_result.return_excutable_block(-1, True)}, you can generate the input by passing randomly built matrix. This code will be directly excecuted so not make it a function.Also,make sure that the unit code does not import any new libraries.")]
     unit_test = code_gen_chain.invoke({"context":"","messages" : messages})
     messages +=  [("assistant",f"{unit_test.prefix} \n Imports: {unit_test.imports} \n Code: {unit_test.code}")]
     code_gen_result.set_latest_block("unit_test_code", unit_test.imports +"\n" + unit_test.code )
@@ -217,10 +219,23 @@ def code_check(state: GraphState):
     except Exception as e:
         print("---CODE IMPORT CHECK: FAILED---")
         print(f"{e}")
+        #Solution to fix import check
+        pip_install_prompt = """I want your answer to return ONLY a pip install statement for the missing library based on the error message """+str(e)
+        response =  (llm.invoke(pip_install_prompt))
+        response=response.content
+        content = response.strip("`").replace("```plaintext\n", "").replace("```", "")
+        print(content)
+        try:
+            subprocess.run(content, shell=True, check=True)
+            print("Library installation successful.")
+            print("the code solution")
+            print(code_solution)
+            return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "no"}
+        except subprocess.CalledProcessError as e:
+            print("Error occurred while installing the library:", e)
         error_message = [("user", f"Your solution failed the import test: {e}")]
         messages += error_message
         return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "yes"}
-    
     # Check execution
     try:
         exec(imports + "\n" + code)
@@ -250,6 +265,8 @@ def unit_test_check(state: GraphState):
         print(f"unit test failed: {e}")
         error_message = [("user", f"Your solution failed the unit test: {e}")]
         messages += error_message
+        print("the unit test code")
+        print(unit_test_code)
         return {"generation": unit_test_code, "messages": messages, "iterations": iterations, "error": "yes"}
     
     print("---UNIT TEST PASSED---")
@@ -293,6 +310,7 @@ def decide_to_finish_generate(state: GraphState):
         str: Next node to call
     """
     error = state["error"]
+    print(error)
     iterations = state["iterations"]
     
     if error == "no" or iterations == max_iterations:
@@ -370,6 +388,7 @@ workflow.add_node("unit_test_check", unit_test_check)  # unit test check
 workflow.set_entry_point("generate")
 workflow.add_edge("generate", "check_code")
 workflow.add_edge("unit_test", "unit_test_check")
+
 workflow.add_conditional_edges(
     "check_code",
     decide_to_finish_generate,
