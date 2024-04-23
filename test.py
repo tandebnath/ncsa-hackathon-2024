@@ -1,6 +1,7 @@
 
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from dotenv import load_dotenv
+from numpy import block
 load_dotenv(dotenv_path='.env', override=True)
 import os 
 from typing import Dict, TypedDict, List
@@ -15,7 +16,9 @@ import tempfile
 ### Parameter
 # Max tries
 max_iterations = 3
-max_unit_iterations = 4
+max_unit_iterations = 3
+max_block_iterations = 3
+
 # Reflect
 # flag = 'reflect'
 unit_flag = True
@@ -59,15 +62,19 @@ class code(BaseModel):
     name: str = Field(description="Name of the code block")
     prefix: str = Field(description="Description of the problem and approach")
     imports: str = Field(description="Code block import statements")
-    code: str = Field(description="Code block not including import statements")
-    description = "Schema for code solutions to questions about LCEL."
+    code: str = Field(description="Code block not including import statements. It have two parts. 1: only the function code for the problem, providing a funciton to use. 2: test code to test the function with randomly generalized input")
+    # code: str = Field(description="Code block for unit tests, only the test code to check the function")
+    description = "Schema for code solutions to questions."
 
 class CodeBlock:
     def __init__(self) -> None:
         self.prefix = ""
         self.imports = ""
         self.code = ""
-        self.unit_test_code = ""
+        self.test_code = ""
+        self.name = ""
+        self.description = ""
+
         
 class CodeBlocks:
     def __init__(self) -> None:
@@ -83,7 +90,7 @@ class CodeBlocks:
     def return_excutable_block(self, idx, unit_test=True):
         block = self.blocks[idx]
         if unit_test:
-            return "\n".join([ block.imports + "\n" + block.code + "\n" + block.unit_test_code])
+            return "\n".join([block.test_code])
         else:
             return "\n".join([ block.imports + "\n" + block.code])
         # return "\n".join([ block.imports + "\n" + block.code + "\n" + block.unit_test_code])
@@ -91,16 +98,22 @@ class CodeBlocks:
     def get_latest_user_input(self):
         return self.user_inputs[len(self.blocks) - 1]
     
-    def save_all_files(self, dir_name="tempcode"):
+    def save_all_files(self, dir_name="tempcode", file_name=None):
         os.makedirs(dir_name, exist_ok=True)
         for i, block in enumerate(self.blocks[:-1]):
-            with open(f"{dir_name}/{block.name}.py", "w") as file:
+            if file_name is None:
+                file_name = block.name
+            with open(f"{dir_name}/{file_name}.py", "w") as file:
                 file.write(self.return_excutable_block(i))
     
 
 code_gen_chain = code_gen_prompt | llm.with_structured_output(code)
 code_gen_result = CodeBlocks()
 
+def write_code_to_file(code: str, file_name: str):
+    with open("tempcode/"+file_name+".py", "w") as file:
+        file.write(code)
+        
 class GraphState(TypedDict):
     """
     Represents the state of our graph.
@@ -116,9 +129,21 @@ class GraphState(TypedDict):
     messages : List
     generation : str
     iterations : int
+    block_iterations : int
+    question : str
 
- 
+
+def excute_code(code: str):
+    with tempfile.NamedTemporaryFile(mode='w', suffix=".py") as file:
+        file.write(code)
+        file.seek(0)
+        output = subprocess.run(['python', file.name], capture_output=True, text=True)
+    return output.stderr
+
 ### Nodes
+def regenerate(state: GraphState):
+    state.update({"block_iterations": state["block_iterations"] + 1, "iterations": 0})
+    return state
 
 def generate(state: GraphState):
     """
@@ -140,49 +165,46 @@ def generate(state: GraphState):
 
     # We have been routed back to generation with an error
     if error == "yes":
-        messages += [("user","Now, try again. Invoke the code tool to structure the output with a prefix, imports, and code block:")]
+        messages += [("user","Now, try again. Invoke the code tool to structure the output with a prefix, imports, function code block.")]
         
     # Solution
     code_solution = code_gen_chain.invoke({"context":"","messages" : messages})
-    messages += [("assistant",f"{code_solution.prefix} \n Imports: {code_solution.imports} \n Code: {code_solution.code}")]
-    
     code_gen_result.set_latest_block("prefix", code_solution.prefix)
     code_gen_result.set_latest_block("imports", code_solution.imports)
     code_gen_result.set_latest_block("code", code_solution.code)
+    # code_gen_result.set_latest_block("test_code", code_solution.test_code)
     code_gen_result.set_latest_block("name", code_solution.name)
-    # Increment
-    iterations = iterations + 1
-    return {"generation": code_solution, "messages": messages, "iterations": iterations}
+    code_gen_result.set_latest_block("description", code_solution.description)
 
-def generate_unit_tests(state: GraphState):
-    """
-    Generate unit tests
-
-    Args:
-        state (dict): The current graph state
-
-    Returns:
-        state (dict): New key added to state, generation
-    """
-
-    print("---GENERATING UNIT TESTS---")
+    write_code_to_file(code_solution.imports + "\n" + code_solution.code, "1")
+    messages += [("assistant",f"Function Code: {code_solution.prefix} \n Imports: {code_solution.imports} \n Code: {code_solution.code}")]
+    request_for_test_code = [("user", "Now, provide the test code to test the function with randomly generalized input")]
+    messages += request_for_test_code
     
-    # State
-    messages = state["messages"]
-    iterations = state["iterations"]
-
-    # get user input
-    # user_input = input("Please provide the input for the unit test in format (arg1, arg2, ...), give \n if no input:")
-    user_input = code_gen_result.get_latest_user_input()
-    if user_input != "\n":
-        messages += [("user",f"input arguments for the unit test: {user_input}")]
-    # Generate unit tests
-    messages += [("user",f"Now, Please generate the test code for the the solution to see if the function can run: {code_gen_result.return_excutable_block(-1, True)}, you can generate the input by passing randomly built matrix. This code will be directly excecuted so not make it a function. For the import, only import new requirements if it is not imported previously")]
-    unit_test = code_gen_chain.invoke({"context":"","messages" : messages})
-    messages +=  [("assistant",f"{unit_test.prefix} \n Imports: {unit_test.imports} \n Code: {unit_test.code}")]
-    code_gen_result.set_latest_block("unit_test_code", unit_test.imports +"\n" + unit_test.code )
+    
+    print("---GENERATING TEST CODE SOLUTION---")
+    test_code_solution = code_gen_chain.invoke({"context":"","messages" : messages})
+    
+    test_imports = test_code_solution.imports
+    test_code_block = test_code_solution.code
+    
+    messages += [("assistant",f"Test Code: Imports: {test_imports} \n Code: {test_code_block}")]
+    concat_code = "\n".join([code_solution.imports, code_solution.code, test_code_solution.imports, test_code_solution.code])
+    write_code_to_file(concat_code, "2")
+    request_for_code_clean = [("user", f"this is the concated code, including the function code and test code. Please clean the code and provide the final version. Remeber to call the test function in main:\n {concat_code}")]
+    # Increment
+    messages += request_for_code_clean
+    
+    print("---GENERATING FINAL CODE SOLUTION---")
+    final_code_solution = code_gen_chain.invoke({"context":"","messages" : messages})
+    code_gen_result.set_latest_block("code", final_code_solution.code)
+    code_gen_result.set_latest_block("imports", final_code_solution.imports)
+    write_code_to_file(final_code_solution.imports + "\n" + final_code_solution.code, "3")
     iterations = iterations + 1
-    return {"generation": unit_test, "messages": messages, "iterations": iterations, "error": "no"}
+    state.update({"generation": final_code_solution, "messages": messages, "iterations": iterations})
+    print(state.keys())
+    return state
+
 
 def code_check(state: GraphState):
     """
@@ -203,62 +225,38 @@ def code_check(state: GraphState):
     iterations = state["iterations"]
 
     # Get solution components
-    prefix = code_solution.prefix
-    imports = code_solution.imports
-    code = code_solution.code
+    # prefix = code_solution.prefix
+    block_imports = code_solution.imports
+    block_code = code_solution.code
     # write the code to a file
-    with open("temp.py", "w") as file:
-        file.write(imports)
-        file.write("\n")
-        file.write(code)
-    # Check imports
-    try:
-        exec(imports)
-    except Exception as e:
+    e = excute_code(block_imports)
+    if e:
         print("---CODE IMPORT CHECK: FAILED---")
         print(f"{e}")
         error_message = [("user", f"Your solution failed the import test: {e}")]
         messages += error_message
-        return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "yes"}
+        state.update({"generation": code_solution, "messages": messages, "iterations": iterations, "error": "yes"})
+        return state
     
-    # Check execution
-    try:
-        exec(imports + "\n" + code)
-    except Exception as e:
+    code = block_imports + "\n" + block_code
+
+    e = excute_code(code)
+    if e:
         print("---CODE BLOCK CHECK: FAILED---")
         print(f"solution failed the code execution test: {e}")
-        error_message = [("user", f"Your solution failed the code execution test: {e}")]
+        error_message = [("user", f"Your solution failed the function code execution test: {e}")]
         messages += error_message
-        return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "yes"}
-  
+        state.update({"generation": code_solution, "messages": messages, "iterations": iterations, "error": "yes"})
+        return state
+
+
+    
     # No errors
     print("---NO CODE TEST FAILURES---")
-    return {"generation": code_solution, "messages": messages, "iterations": iterations, "error": "no"}
+    state.update({"generation": code_solution, "messages": messages, "iterations": iterations, "error": "no"})
+    return state
 
 
-def unit_test_check(state: GraphState):
-    print("---UNIT TEST CHECK---")
-    
-    messages = state["messages"]
-    unit_test_code = state["generation"]
-    iterations = state["iterations"]
-    code = code_gen_result.return_excutable_block(-1)
-
-    with tempfile.NamedTemporaryFile(mode='w', suffix=".py") as file:
-        file.write(code)
-        file.seek(0)
-        output = subprocess.run(['python', file.name], capture_output=True, text=True)
-        
-    if output.stderr:
-        print("---UNIT TEST FAILED---")
-        print(f"unit test failed: {output.stderr}")
-        error_message = [("user", f"Your solution failed the unit test: {output.stderr}")]
-        messages += error_message
-        return {"generation": unit_test_code, "messages": messages, "iterations": iterations, "error": "yes"}
-    
-    print("---UNIT TEST PASSED---")
-    return {"generation": unit_test_code, "messages": messages, "iterations": iterations, "error": "no"}
-    
 
 def reflect(state: GraphState):
     """
@@ -300,43 +298,17 @@ def decide_to_finish_generate(state: GraphState):
     iterations = state["iterations"]
     
     if error == "no" or iterations == max_iterations:
-        state["iterations"] = 0
+        
         print("---DECISION: FINISH GENERATION---")
-        if unit_flag:
-            return "unit_test"
-        else:
-            return "end"
+        code_gen_result.finish_block()
+        return "end"
     else:
-        print("---DECISION: RE-TRY SOLUTION---")
+        print(f"---DECISION: RE-TRY SOLUTION---, iterations:{iterations}")
         if flag == "reflect":
             return "reflect"
         else:
             return "generate"
 
-
-def decide_to_finish_unit_test(state: GraphState):
-    """
-    Determines whether to finish.
-
-    Args:
-        state (dict): The current graph state
-
-    Returns:
-        str: Next node to call
-    """
-    error = state["error"]
-    iterations = state["iterations"]
-
-    if error == "no" or iterations == max_unit_iterations:
-        print("---DECISION: FINISH---")
-        code_gen_result.finish_block()
-        return "end"
-    else:
-        print("---DECISION: RE-TRY SOLUTION---")
-        if flag == 'reflect':
-            return "reflect"
-        else:
-            return "unit_test"
 
 def check_import(run: Run, example: Example) -> dict: 
     imports = run.outputs.get("imports")
@@ -357,7 +329,7 @@ def check_execution(run: Run, example: Example) -> dict:
 
 def predict_langgraph(app, example: dict):
     """ LangGraph """
-    graph = app.invoke({"context":"","messages":[("user",example["question"])],"iterations":0})
+    graph = app.invoke({"context":"","messages":[("user",example["question"])],"iterations":0, "block_iterations":0, "question": example["question"]})
     solution = graph["generation"]
     return {"imports": solution.imports, "code": solution.code}
 
@@ -366,37 +338,25 @@ workflow = StateGraph(GraphState)
 # Define the nodes
 workflow.add_node("generate", generate)  # generation solution
 workflow.add_node("check_code", code_check)  # check code
-workflow.add_node("unit_test", generate_unit_tests)  # unit test
-# workflow.add_node("reflect", reflect)  # reflect
-workflow.add_node("unit_test_check", unit_test_check)  # unit test check
 
 # Build graph
 workflow.set_entry_point("generate")
 workflow.add_edge("generate", "check_code")
-workflow.add_edge("unit_test", "unit_test_check")
+
 workflow.add_conditional_edges(
     "check_code",
     decide_to_finish_generate,
     {
         "end": END,
-        "unit_test": "unit_test",
         "generate": "generate",
     },
 )
 
-workflow.add_conditional_edges(
-    "unit_test_check",
-    decide_to_finish_unit_test,
-    {
-        "end": END,
-        "unit_test": "unit_test",
-        # "generate": "generate",
-    },
-)
+
 app = workflow.compile()
 # Evaluator
 code_evalulator = [check_import,check_execution]
-input_json_path = "/u/jiahuad2/codebase/hack/workflow-agent/dataloader.json"
+input_json_path = "/u/jiahuad2/codebase/hack/workflow-agent/anqi.json"
 import json
 with open(input_json_path, "r") as file:
     inputs = json.load(file)
