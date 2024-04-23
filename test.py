@@ -32,12 +32,12 @@ llm = AzureChatOpenAI(
         )
 
 code_gen_prompt = ChatPromptTemplate.from_messages(
-    [("system","""You are a coding assistant with expertise in LCEL, LangChain expression language. \n 
-    Here is a full set of LCEL documentation:  \n ------- \n  {context} \n ------- \n Answer the user 
-    question based on the above provided documentation. Ensure any code you provide can be executed \n 
-    with all required imports and variables defined. Structure your answer with a description of the code solution. \n
-    Then list the imports. And finally list the functioning code block. Here is the user question:"""),
+    [("system","""You are a coding asistant to generate function code and test code. The user will give specific task descriptions. Just give fully executable end to end code. Nothing should be missing."""),
     ("placeholder", "{messages}")]
+)
+
+global_gen_prompt = ChatPromptTemplate.from_messages(
+    [("system", """You are a world-class programmer and AI assistant capable of executing any goal related to software development, genAI, LLMs, and full-stack technologies. Write a code for a main script based on the user prompt. The user prompt is [user prompt]: {user_prompt}. Now taking user_prompt, I want you to first split it into subprompts and figure out which subprompts can be parallelized and which are sequential. Give me end to end code structure and the code to execute these subprompts parallely or sequentially based on what you decided. Now for each sub prompt, I have a function called systemcheck which takes in the input of the subprompt. Now, show me the code for how you are parallelizing this and how you are making it sequential clearly. Include all the implementation details. You are free to make decisions as to what the CNN Architecture is, or which performance metrics to choose etc. Just give fully executable end to end code. Nothing should be missing.""")]
 )
 
 # # LCEL docs
@@ -62,10 +62,19 @@ class code(BaseModel):
     name: str = Field(description="Name of the code block")
     prefix: str = Field(description="Description of the problem and approach")
     imports: str = Field(description="Code block import statements")
-    code: str = Field(description="Code block not including import statements. It have two parts. 1: only the function code for the problem, providing a funciton to use. 2: test code to test the function with randomly generalized input")
+    code: str = Field(description="Code block not including import statements. It has the function code for the problem, providing a funciton to use.")
     # code: str = Field(description="Code block for unit tests, only the test code to check the function")
     description = "Schema for code solutions to questions."
 
+
+class main_code(BaseModel):
+    """Code output"""
+    name: str = Field(description="Name of the code block")
+    prefix: str = Field(description="Description of the problem and approach")
+    imports: str = Field(description="Code block import statements")
+    code: str = Field(description="Code block not including import statements. ")
+    # code: str = Field(description="Code block for unit tests, only the test code to check the function")
+    description = "Schema for code solutions to questions."
 class CodeBlock:
     def __init__(self) -> None:
         self.prefix = ""
@@ -108,6 +117,8 @@ class CodeBlocks:
     
 
 code_gen_chain = code_gen_prompt | llm.with_structured_output(code)
+global_gen_chain = global_gen_prompt | llm.with_structured_output(main_code )
+
 code_gen_result = CodeBlocks()
 
 def write_code_to_file(code: str, file_name: str):
@@ -329,7 +340,7 @@ def check_execution(run: Run, example: Example) -> dict:
 
 def predict_langgraph(app, example: dict):
     """ LangGraph """
-    graph = app.invoke({"context":"","messages":[("user",example["question"])],"iterations":0, "block_iterations":0, "question": example["question"]})
+    graph = app.invoke({"question":example["question"],"messages":[("user",example["question"])],"iterations":0, "block_iterations":0, "question": example["question"]})
     solution = graph["generation"]
     return {"imports": solution.imports, "code": solution.code}
 
@@ -365,6 +376,13 @@ for i in range(len(inputs)):
         code_gen_result.user_inputs.append(inputs[i]["user_inputs"])
     else:
         code_gen_result.user_inputs.append("")
+        
+with open("global.txt", "r") as file:
+    global_descriptions = "".join(file.readlines())
+
+global_response = global_gen_chain.invoke({"user_prompt" : global_descriptions})
+write_code_to_file(global_response.imports + "\n" + global_response.code, "main")
+exit(0)
 result = predict_langgraph(app, {"question": inputs[0]["question"]})
 print(result)
 code_gen_result.save_all_files("tempcode")
