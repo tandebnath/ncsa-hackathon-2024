@@ -1,0 +1,28 @@
+In the input folder called input, I have many .npy files of 3 by n shape 1d time series data of strain in gravitational wave, 3 refers to number of channels. Sampling rate is 2048 Hz for all. I also have a training.csv file that has 2 columns contains the name of npy file (make sure to add .npy extension to the file names in the csv file when loading data) and its label 0 or 1 (column names are id,target).
+skip to next file if you can't find file name in the input folder.
+for each .npy file in the input location:
+0) apply bandpass filter to data from 25Hz to 500Hz
+1) Take the bandpass filtered data and preprocess the data for CNN deep learning by doing the following steps:
+1-1. take stft of the filtered data , recall that the sampling rate is 2048 Hz.
+
+2)Create a set of Python scripts using PyTorch: one to define neural network components including a SqueezeExciteBlock, ConvBNSiLU, and an InceptionModule integrated into a Model class; another to manage data with a class that loads .npy files and sets up data loaders; a third for a training script with a loop for loss calculation, validation, and early stopping; and a fourth script to run the training process. Ensure the setup handles errors and logs progress
+
+3) I want to find the time delay between each channel as each channel are located in different physical locations. Take the bandpass filted signal time series data, and only take label 1 data.
+3-1. Can you compute cross correlation between all possible combination of channel pairs and find the time lag between these two channel pairs?
+4) Use the bandpass filtered time series data and perform the phase space plots following the instructions below
+For each channel i want you to generate a parametric phase space plot of time derivative of the signal versus the signal here are possible steps that I can provide. make sure to separated label 0 data and label 1 data.
+4-1. find the time derivative of the signal
+4-2. generate an animation of the parametric plot time derivative of the signal versus the signal as the time evolves.
+4-3. save the animation into output folder, and do this for all files in the input folder path
+5) I want to compute the energy density of gravitational wave. so take bandpass filtered time series signal and perform
+5-1. do fourier transform of the filtered signal, call this h(f)
+5-2.  let e(f) = (\pi / 4) (f^2) h(f) h_c(f) where h_c(f) is complex conjugate of h(f)
+5-3. integrate e(f) from 25 Hz to 500Hz, and take the real part of the result only
+5-4. do this for each channel , so you can output a 1 by 3 array for each data file.
+5-5. repeat this process for all the .npy files in the input folder, while recording the resultant energy densities. 
+5-7. Plot a histogram of energy densities per channel with labels 0, and labels 1 separately. 
+5-8. Save the histrogram into output folder
+6) Plot spectrogram
+6-1. Take the stft of the filtered data and plot the spectrogram in log frequency of base 2 (y-axis)
+6-2. Merge three channels spectrogram as one plot, but take three channels as R,G,B color channels when plotting the merged spectrogram.
+6-3. do this for all files and save the spectrogram into output folder called output
