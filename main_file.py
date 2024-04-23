@@ -50,7 +50,7 @@ def run(prompt_file: str = typer.Argument(..., help="Path to the file containing
     typer.echo("Final Response from Azure OpenAI after Verification:")
     typer.echo(result)
     typer.echo("Running workflow_generation.py...")
-    subprocess.run(["python", "workflow_generation.py"])
+    subprocess.run(["python", "workflow_generation.py", str(result.content)])
     typer.echo("workflow_generation.py executed.")
 
 if __name__ == "__main__":

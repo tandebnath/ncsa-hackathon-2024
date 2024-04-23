@@ -86,44 +86,35 @@ llm = AzureChatOpenAI(
 
 # Define a function to asynchronously invoke the LLM to generate code for a given prompt
 async def generate_code(prompt):
-    response = await llm.invoke(prompt)
-    install_imports(response.content)
-    print(response.content)
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(None, llm.invoke, prompt)
+    # Assuming response.content contains the code directly
     return response.content
 
+# Function to check or create necessary directories
+def check_create_directory(directory):
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
-#calling variables from first file
-subprompts = {
-    "subprompt_0": "Write a Python script using scipy to apply a bandpass filter from 25Hz to 500Hz on a 3 by n shape 1D time series numpy array. The sampling rate is 2048 Hz.",
-    "subprompt_1": "Write a Python function to perform Short-Time Fourier Transform (STFT) on a time series data with a sampling rate of 2048 Hz using scipy.signal.",
-    "subprompt_2": "Create a PyTorch neural network architecture with a SqueezeExciteBlock, ConvBNSiLU, and an InceptionModule integrated into a Model class.",
-    "subprompt_3": "Write a Python class using PyTorch and numpy to load .npy files, apply preprocessing, and set up data loaders for training a CNN.",
-    "subprompt_4": "Write a PyTorch training script that includes a training loop, loss calculation, validation, early stopping, and progress logging.",
-    "subprompt_5": "Write a Python script to compute the cross-correlation between all possible pairs of channels in a 3-channel time series data to find the time lag, focusing only on data with label 1.",
-    "subprompt_6": "Write a Python script to generate an animation of a parametric phase space plot of the time derivative of the signal versus the signal for each channel in a 3-channel time series data, and save the animation to an output folder.",
-    "subprompt_7": "Write a Python function to compute the energy density of a gravitational wave from a bandpass filtered time series signal using Fourier transform and integration.",
-    "subprompt_8": "Write a Python script to plot a histogram of energy densities for each channel, separating data with labels 0 and 1, and save the histogram to an output folder.",
-    "subprompt_9": "Write a Python script to plot a spectrogram from STFT data, merge three channels into an RGB image, and save the spectrogram to an output folder."
-}
-workflow = {
-    "parallel_tasks": [
-        "subprompt_0",  # Bandpass filtering can be done in parallel for each file
-        "subprompt_1",  # STFT can be done in parallel after bandpass filtering
-        "subprompt_5",  # Cross-correlation can be done in parallel for label 1 data
-        "subprompt_6",  # Phase space plot animations can be done in parallel
-        "subprompt_7",  # Energy density computation can be done in parallel
-        "subprompt_8",  # Histogram plotting can be done after energy density computation
-        "subprompt_9"   # Spectrogram plotting can be done in parallel after STFT
-    ],
-    "sequential_tasks": [
-        "subprompt_2",  # Neural network architecture needs to be defined before training
-        "subprompt_3",  # Data loading and preprocessing class needs to be ready before training
-        "subprompt_4"   # Training script needs the model and data loader to be defined first
-    ]
-}
+import sys
+import re
+import ast
+main_response=sys.argv[1]
+print("the main response")
+print(main_response)
+subprompts_str = re.search(r"subprompts\s*=\s*{[^}]+}", main_response, re.MULTILINE).group(0)
+print(subprompts_str)
+extracted_string = subprompts_str.strip()
+dictionary_string = extracted_string.split('=', 1)[1]
+subprompts = ast.literal_eval(dictionary_string)
+workflow_str = re.search(r"workflow\s*=\s*{[^}]+}", main_response, re.MULTILINE).group(0)
+extracted_string = workflow_str.strip()
+dictionary_string = extracted_string.split('=', 1)[1]
+workflow= ast.literal_eval(dictionary_string)
 
 input_folder = 'input'
 output_folder = 'output'
+
 
 # Define a function to handle the parallel execution of tasks
 async def handle_parallel_tasks(tasks):
@@ -143,6 +134,10 @@ async def handle_sequential_tasks(tasks):
 # Existing imports and function definitions...
 
 async def main(input_folder, output_folder):
+    # Ensure directories exist
+    check_create_directory(output_folder)
+    check_create_directory(input_folder)
+
     print("runnningg")
     # Generate code for parallel tasks
     parallel_results = await handle_parallel_tasks(workflow['parallel_tasks'])
